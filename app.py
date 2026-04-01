@@ -23,9 +23,9 @@ except:
 def get_ticker(symbol):
     """rate limit 방지 헬퍼 - yf.Ticker에 세션 주입"""
     try:
-        return get_ticker(symbol, session=_session)
+        return yf.Ticker(symbol, session=_session)
     except:
-        return get_ticker(symbol)
+        return yf.Ticker(symbol)
 
 # ─────────────────────────────────────────
 # 페이지 설정
