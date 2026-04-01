@@ -239,18 +239,30 @@ elif menu == "📊 포트폴리오":
         df_p['평균단가'] = df_p['투자금액'] / df_p['매수갯수'].replace(0, 1)
 
         with st.spinner('현재가 불러오는 중...'):
+            import time
             current_prices, sectors, names = [], [], []
-            for t in df_p['티커']:
-                try:
-                    s    = yf.Ticker(t)
-                    hist = s.history(period="2d")
-                    p    = float(hist['Close'].iloc[-1]) if not hist.empty else 0
-                    info = s.info
-                    current_prices.append(p)
-                    sectors.append(info.get('sector', 'Unknown'))
-                    names.append(info.get('shortName', t))
-                except:
-                    current_prices.append(0); sectors.append('Unknown'); names.append(t)
+            for i_t, t in enumerate(df_p['티커']):
+                for attempt in range(3):
+                    try:
+                        s      = yf.Ticker(t)
+                        hist   = s.history(period="2d")
+                        p      = float(hist['Close'].iloc[-1]) if not hist.empty else 0
+                        info_t = s.info
+                        current_prices.append(p)
+                        sectors.append(info_t.get('sector', 'Unknown'))
+                        names.append(info_t.get('shortName', t))
+                        if i_t > 0:
+                            time.sleep(0.5)
+                        break
+                    except Exception as e:
+                        if 'too many requests' in str(e).lower() or 'rate limit' in str(e).lower():
+                            if attempt < 2:
+                                time.sleep(5 * (attempt + 1))
+                            else:
+                                current_prices.append(0); sectors.append('Unknown'); names.append(t)
+                        else:
+                            current_prices.append(0); sectors.append('Unknown'); names.append(t)
+                            break
 
             df_p['현재가']        = current_prices
             df_p['섹터']          = sectors
@@ -454,11 +466,60 @@ elif menu == "🔍 기업 원칙 분석":
     if target_ticker and analyze:
         with st.spinner(f"{target_ticker} 데이터 불러오는 중..."):
             try:
-                stock      = yf.Ticker(target_ticker)
-                info       = stock.info
-                financials = stock.financials
-                balance    = stock.balance_sheet
-                cashflow   = stock.cashflow
+                import time
+
+                # ── Rate Limit 대응: 재시도 로직 ─────────
+                def fetch_with_retry(ticker_sym, retries=3, delay=3):
+                    """yfinance Rate Limit 시 최대 3회 재시도"""
+                    for attempt in range(retries):
+                        try:
+                            s  = yf.Ticker(ticker_sym)
+                            # info 먼저 호출해서 rate limit 체크
+                            i  = s.info
+                            if not i or i.get('regularMarketPrice') is None and i.get('currentPrice') is None:
+                                # 빈 응답이면 잠시 후 재시도
+                                if attempt < retries - 1:
+                                    time.sleep(delay)
+                                    continue
+                            return s, i
+                        except Exception as e:
+                            err_msg = str(e).lower()
+                            if 'too many requests' in err_msg or 'rate limit' in err_msg:
+                                if attempt < retries - 1:
+                                    wait = delay * (attempt + 1)  # 3초 → 6초 → 9초
+                                    st.toast(f"⏳ 요청 제한 감지, {wait}초 후 재시도... ({attempt+1}/{retries})")
+                                    time.sleep(wait)
+                                else:
+                                    raise Exception("yfinance 요청 횟수 초과입니다. 30초 후 다시 시도해주세요.")
+                            else:
+                                raise e
+                    return None, None
+
+                stock, info = fetch_with_retry(target_ticker)
+                if stock is None:
+                    st.error("데이터를 불러오지 못했습니다. 잠시 후 다시 시도해주세요.")
+                    st.stop()
+
+                # 재무 데이터는 개별 재시도
+                def safe_fetch(fn, label="데이터"):
+                    for attempt in range(3):
+                        try:
+                            result = fn()
+                            return result
+                        except Exception as e:
+                            if 'too many requests' in str(e).lower() or 'rate limit' in str(e).lower():
+                                if attempt < 2:
+                                    time.sleep(3 * (attempt + 1))
+                                else:
+                                    st.warning(f"⚠️ {label} 불러오기 실패 (요청 제한). 일부 지표가 N/A로 표시됩니다.")
+                                    return pd.DataFrame()
+                            else:
+                                return pd.DataFrame()
+                    return pd.DataFrame()
+
+                financials = safe_fetch(lambda: stock.financials,    "재무제표")
+                balance    = safe_fetch(lambda: stock.balance_sheet,  "대차대조표")
+                cashflow   = safe_fetch(lambda: stock.cashflow,       "현금흐름표")
 
                 company_name = info.get('shortName', target_ticker)
                 sector       = info.get('sector',   'N/A')
