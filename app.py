@@ -6,6 +6,26 @@ import plotly.graph_objects as go
 from datetime import datetime
 import os
 import hashlib
+import time
+
+# yfinance 세션 - rate limit 방지용 retry 설정
+try:
+    import requests
+    from requests.adapters import HTTPAdapter
+    from urllib3.util.retry import Retry
+    _session = requests.Session()
+    _retry = Retry(total=5, backoff_factor=1.5, status_forcelist=[429, 500, 502, 503, 504])
+    _session.mount("https://", HTTPAdapter(max_retries=_retry))
+    _session.headers.update({"User-Agent": "Mozilla/5.0"})
+except:
+    _session = None
+
+def get_ticker(symbol):
+    """rate limit 방지 헬퍼 - yf.Ticker에 세션 주입"""
+    try:
+        return get_ticker(symbol, session=_session)
+    except:
+        return get_ticker(symbol)
 
 # ─────────────────────────────────────────
 # 페이지 설정
@@ -244,7 +264,7 @@ elif menu == "📊 포트폴리오":
             for i_t, t in enumerate(df_p['티커']):
                 for attempt in range(3):
                     try:
-                        s      = yf.Ticker(t)
+                        s      = get_ticker(t)
                         hist   = s.history(period="2d")
                         p      = float(hist['Close'].iloc[-1]) if not hist.empty else 0
                         info_t = s.info
@@ -315,7 +335,7 @@ elif menu == "📊 포트폴리오":
         sel = st.multiselect("비교할 종목 선택", df_p['티커'].tolist(), default=df_p['티커'].tolist()[:3])
         period_opt = st.select_slider("기간", options=["1mo","3mo","6mo","1y","2y","5y"], value="1y")
         if sel:
-            hist_data = {t: yf.Ticker(t).history(period=period_opt)['Close'] for t in sel}
+            hist_data = {t: get_ticker(t).history(period=period_opt)['Close'] for t in sel}
             hist_df   = pd.DataFrame(hist_data)
             fig_line  = go.Figure()
             colors    = ['#3b82f6','#6366f1','#22c55e','#f59e0b','#ef4444','#8b5cf6']
@@ -336,91 +356,58 @@ elif menu == "🔍 기업 원칙 분석":
     st.caption("7가지 원칙 기반으로 기업의 투자 적합성을 검증합니다.")
     st.markdown("---")
 
-    # ── 종목 리스트 로드 (NYSE + NASDAQ 전체) ─────────
-    @st.cache_data(ttl=86400)  # 하루 1번 갱신
+    # ── 종목 리스트 로드 (S&P500 + NASDAQ100 + 다우존스) ─
+    @st.cache_data(ttl=86400)
     def load_stock_list():
-        """NASDAQ 공식 FTP에서 NYSE + NASDAQ 전 상장 종목 로드"""
-        import urllib.request, io
-
-        all_stocks = []  # [(ticker, name, exchange)]
-
-        headers = {'User-Agent': 'Mozilla/5.0'}
-
-        # NASDAQ 상장 종목
-        try:
-            url = "https://api.nasdaq.com/api/screener/stocks?tableonly=true&limit=10000&exchange=nasdaq"
-            req = urllib.request.Request(url, headers=headers)
-            with urllib.request.urlopen(req, timeout=10) as r:
-                import json
-                data = json.loads(r.read())
-            rows = data['data']['table']['rows']
-            for row in rows:
-                t = str(row.get('symbol', '')).strip()
-                n = str(row.get('name',   '')).strip()
-                if t and t != 'nan':
-                    all_stocks.append((t, n, 'NASDAQ'))
-        except:
-            pass
-
-        # NYSE 상장 종목
-        try:
-            url = "https://api.nasdaq.com/api/screener/stocks?tableonly=true&limit=10000&exchange=nyse"
-            req = urllib.request.Request(url, headers=headers)
-            with urllib.request.urlopen(req, timeout=10) as r:
-                import json
-                data = json.loads(r.read())
-            rows = data['data']['table']['rows']
-            for row in rows:
-                t = str(row.get('symbol', '')).strip()
-                n = str(row.get('name',   '')).strip()
-                if t and t != 'nan':
-                    all_stocks.append((t, n, 'NYSE'))
-        except:
-            pass
-
-        # AMEX 상장 종목
-        try:
-            url = "https://api.nasdaq.com/api/screener/stocks?tableonly=true&limit=10000&exchange=amex"
-            req = urllib.request.Request(url, headers=headers)
-            with urllib.request.urlopen(req, timeout=10) as r:
-                import json
-                data = json.loads(r.read())
-            rows = data['data']['table']['rows']
-            for row in rows:
-                t = str(row.get('symbol', '')).strip()
-                n = str(row.get('name',   '')).strip()
-                if t and t != 'nan':
-                    all_stocks.append((t, n, 'AMEX'))
-        except:
-            pass
-
-        # 중복 제거 후 딕셔너리 생성
-        seen = set()
         stock_dict = {}
-        for t, n, exch in all_stocks:
-            if t not in seen:
-                seen.add(t)
-                stock_dict[t] = f"{t} — {n} ({exch})"
 
-        # API 실패 시 폴백: S&P500 Wikipedia
-        if len(stock_dict) < 100:
-            try:
-                sp500 = pd.read_html("https://en.wikipedia.org/wiki/List_of_S%26P_500_companies")[0]
-                for _, row in sp500.iterrows():
-                    t = str(row['Symbol']).replace('.', '-').strip()
-                    n = str(row['Security']).strip()
+        # S&P 500
+        try:
+            df = pd.read_html("https://en.wikipedia.org/wiki/List_of_S%26P_500_companies")[0]
+            for _, row in df.iterrows():
+                t = str(row["Symbol"]).replace(".", "-").strip()
+                n = str(row["Security"]).strip()
+                stock_dict[t] = f"{t} — {n} (S&P500)"
+        except:
+            pass
+
+        # NASDAQ 100
+        try:
+            tables = pd.read_html("https://en.wikipedia.org/wiki/Nasdaq-100")
+            for tbl in tables:
+                cols = [str(c).lower() for c in tbl.columns]
+                if any("ticker" in c or "symbol" in c for c in cols):
+                    ticker_col = next(c for c in tbl.columns if "ticker" in str(c).lower() or "symbol" in str(c).lower())
+                    name_col   = next((c for c in tbl.columns if "company" in str(c).lower() or "security" in str(c).lower()), None)
+                    for _, row in tbl.iterrows():
+                        t = str(row[ticker_col]).strip()
+                        n = str(row[name_col]).strip() if name_col else t
+                        if t and t != "nan" and 1 <= len(t) <= 6 and t.isalpha():
+                            if t not in stock_dict:
+                                stock_dict[t] = f"{t} — {n} (NASDAQ100)"
+                    break
+        except:
+            pass
+
+        # 다우존스 30
+        try:
+            df = pd.read_html("https://en.wikipedia.org/wiki/Dow_Jones_Industrial_Average")[1]
+            for _, row in df.iterrows():
+                t = str(row.get("Symbol", row.get("Ticker", ""))).strip()
+                n = str(row.get("Company", row.get("Name", ""))).strip()
+                if t and t != "nan" and 1 <= len(t) <= 6:
                     if t not in stock_dict:
-                        stock_dict[t] = f"{t} — {n} (S&P500)"
-            except:
-                pass
+                        stock_dict[t] = f"{t} — {n} (DOW30)"
+        except:
+            pass
 
         return stock_dict
 
-    with st.spinner("NYSE + NASDAQ 전 종목 불러오는 중..."):
+    with st.spinner("종목 리스트 불러오는 중..."):
         stock_dict = load_stock_list()
 
     # ── 검색 UI ───────────────────────────────────────
-    st.caption(f"✅ 총 **{len(stock_dict):,}개** 종목 검색 가능 (NYSE + NASDAQ + AMEX)")
+    st.caption(f"✅ 총 **{len(stock_dict):,}개** 종목 (S&P500 + NASDAQ100 + DOW30)")
 
     col_search, col_btn = st.columns([4, 1])
     with col_search:
@@ -466,60 +453,24 @@ elif menu == "🔍 기업 원칙 분석":
     if target_ticker and analyze:
         with st.spinner(f"{target_ticker} 데이터 불러오는 중..."):
             try:
-                import time
-
-                # ── Rate Limit 대응: 재시도 로직 ─────────
-                def fetch_with_retry(ticker_sym, retries=3, delay=3):
-                    """yfinance Rate Limit 시 최대 3회 재시도"""
-                    for attempt in range(retries):
-                        try:
-                            s  = yf.Ticker(ticker_sym)
-                            # info 먼저 호출해서 rate limit 체크
-                            i  = s.info
-                            if not i or i.get('regularMarketPrice') is None and i.get('currentPrice') is None:
-                                # 빈 응답이면 잠시 후 재시도
-                                if attempt < retries - 1:
-                                    time.sleep(delay)
-                                    continue
-                            return s, i
-                        except Exception as e:
-                            err_msg = str(e).lower()
-                            if 'too many requests' in err_msg or 'rate limit' in err_msg:
-                                if attempt < retries - 1:
-                                    wait = delay * (attempt + 1)  # 3초 → 6초 → 9초
-                                    st.toast(f"⏳ 요청 제한 감지, {wait}초 후 재시도... ({attempt+1}/{retries})")
-                                    time.sleep(wait)
-                                else:
-                                    raise Exception("yfinance 요청 횟수 초과입니다. 30초 후 다시 시도해주세요.")
-                            else:
-                                raise e
-                    return None, None
-
-                stock, info = fetch_with_retry(target_ticker)
-                if stock is None:
-                    st.error("데이터를 불러오지 못했습니다. 잠시 후 다시 시도해주세요.")
-                    st.stop()
-
-                # 재무 데이터는 개별 재시도
+                # ── 데이터 로드 (지수 백오프 재시도) ────────
                 def safe_fetch(fn, label="데이터"):
-                    for attempt in range(3):
+                    for attempt in range(4):
                         try:
                             result = fn()
-                            return result
-                        except Exception as e:
-                            if 'too many requests' in str(e).lower() or 'rate limit' in str(e).lower():
-                                if attempt < 2:
-                                    time.sleep(3 * (attempt + 1))
-                                else:
-                                    st.warning(f"⚠️ {label} 불러오기 실패 (요청 제한). 일부 지표가 N/A로 표시됩니다.")
-                                    return pd.DataFrame()
-                            else:
-                                return pd.DataFrame()
+                            if result is not None:
+                                return result
+                        except Exception:
+                            pass
+                        time.sleep(2 ** attempt)  # 1→2→4→8초
+                    st.warning(f"⚠️ {label} 불러오기 실패. 일부 지표가 N/A로 표시됩니다.")
                     return pd.DataFrame()
 
-                financials = safe_fetch(lambda: stock.financials,    "재무제표")
-                balance    = safe_fetch(lambda: stock.balance_sheet,  "대차대조표")
-                cashflow   = safe_fetch(lambda: stock.cashflow,       "현금흐름표")
+                stock      = get_ticker(target_ticker)
+                info       = safe_fetch(lambda: stock.info,         "기업정보") or {}
+                financials = safe_fetch(lambda: stock.financials,   "재무제표")
+                balance    = safe_fetch(lambda: stock.balance_sheet,"대차대조표")
+                cashflow   = safe_fetch(lambda: stock.cashflow,     "현금흐름표")
 
                 company_name = info.get('shortName', target_ticker)
                 sector       = info.get('sector',   'N/A')
@@ -691,7 +642,7 @@ elif menu == "🔍 기업 원칙 분석":
                     bond_rates = {}
                     for bname, bticker in [('미국 10년물','^TNX'), ('회사채(LQD)','LQD'), ('하이일드(HYG)','HYG')]:
                         try:
-                            bi   = yf.Ticker(bticker).info
+                            bi   = get_ticker(bticker).info
                             rate = bi.get('regularMarketPrice') or bi.get('previousClose')
                             if bticker != '^TNX' and rate and rate > 10:
                                 # LQD/HYG의 경우 yield 필드 사용
