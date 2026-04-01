@@ -324,68 +324,119 @@ elif menu == "🔍 기업 원칙 분석":
     st.caption("7가지 원칙 기반으로 기업의 투자 적합성을 검증합니다.")
     st.markdown("---")
 
-    # ── 종목 리스트 로드 ──────────────────────────────
+    # ── 종목 리스트 로드 (NYSE + NASDAQ 전체) ─────────
     @st.cache_data(ttl=86400)  # 하루 1번 갱신
     def load_stock_list():
-        stock_dict = {}  # {티커: "티커 - 회사명 (지수)"}
+        """NASDAQ 공식 FTP에서 NYSE + NASDAQ 전 상장 종목 로드"""
+        import urllib.request, io
+
+        all_stocks = []  # [(ticker, name, exchange)]
+
+        headers = {'User-Agent': 'Mozilla/5.0'}
+
+        # NASDAQ 상장 종목
         try:
-            # S&P 500 (Wikipedia)
-            sp500 = pd.read_html("https://en.wikipedia.org/wiki/List_of_S%26P_500_companies")[0]
-            for _, row in sp500.iterrows():
-                t = str(row['Symbol']).replace('.', '-').strip()
-                n = str(row['Security']).strip()
-                stock_dict[t] = f"{t} - {n} (S&P500)"
+            url = "https://api.nasdaq.com/api/screener/stocks?tableonly=true&limit=10000&exchange=nasdaq"
+            req = urllib.request.Request(url, headers=headers)
+            with urllib.request.urlopen(req, timeout=10) as r:
+                import json
+                data = json.loads(r.read())
+            rows = data['data']['table']['rows']
+            for row in rows:
+                t = str(row.get('symbol', '')).strip()
+                n = str(row.get('name',   '')).strip()
+                if t and t != 'nan':
+                    all_stocks.append((t, n, 'NASDAQ'))
         except:
             pass
+
+        # NYSE 상장 종목
         try:
-            # 나스닥 100 (Wikipedia)
-            ndx = pd.read_html("https://en.wikipedia.org/wiki/Nasdaq-100")[4]
-            for _, row in ndx.iterrows():
-                t = str(row.get('Ticker', row.iloc[1])).strip()
-                n = str(row.get('Company', row.iloc[0])).strip()
-                if t and t != 'nan' and len(t) <= 6:
+            url = "https://api.nasdaq.com/api/screener/stocks?tableonly=true&limit=10000&exchange=nyse"
+            req = urllib.request.Request(url, headers=headers)
+            with urllib.request.urlopen(req, timeout=10) as r:
+                import json
+                data = json.loads(r.read())
+            rows = data['data']['table']['rows']
+            for row in rows:
+                t = str(row.get('symbol', '')).strip()
+                n = str(row.get('name',   '')).strip()
+                if t and t != 'nan':
+                    all_stocks.append((t, n, 'NYSE'))
+        except:
+            pass
+
+        # AMEX 상장 종목
+        try:
+            url = "https://api.nasdaq.com/api/screener/stocks?tableonly=true&limit=10000&exchange=amex"
+            req = urllib.request.Request(url, headers=headers)
+            with urllib.request.urlopen(req, timeout=10) as r:
+                import json
+                data = json.loads(r.read())
+            rows = data['data']['table']['rows']
+            for row in rows:
+                t = str(row.get('symbol', '')).strip()
+                n = str(row.get('name',   '')).strip()
+                if t and t != 'nan':
+                    all_stocks.append((t, n, 'AMEX'))
+        except:
+            pass
+
+        # 중복 제거 후 딕셔너리 생성
+        seen = set()
+        stock_dict = {}
+        for t, n, exch in all_stocks:
+            if t not in seen:
+                seen.add(t)
+                stock_dict[t] = f"{t} — {n} ({exch})"
+
+        # API 실패 시 폴백: S&P500 Wikipedia
+        if len(stock_dict) < 100:
+            try:
+                sp500 = pd.read_html("https://en.wikipedia.org/wiki/List_of_S%26P_500_companies")[0]
+                for _, row in sp500.iterrows():
+                    t = str(row['Symbol']).replace('.', '-').strip()
+                    n = str(row['Security']).strip()
                     if t not in stock_dict:
-                        stock_dict[t] = f"{t} - {n} (NASDAQ100)"
-        except:
-            pass
-        try:
-            # 러셀 2000 ETF 구성 종목 (iShares IWM - top holdings CSV)
-            r2k = pd.read_csv(
-                "https://www.ishares.com/us/products/239710/ishares-russell-2000-etf/1467271812596.ajax?fileType=csv&fileName=IWM_holdings&dataType=fund",
-                skiprows=9
-            )
-            for _, row in r2k.iterrows():
-                t = str(row.get('Ticker', '')).strip()
-                n = str(row.get('Name',   '')).strip()
-                if t and t != 'nan' and t != '-' and len(t) <= 6:
-                    if t not in stock_dict:
-                        stock_dict[t] = f"{t} - {n} (Russell2000)"
-        except:
-            pass
+                        stock_dict[t] = f"{t} — {n} (S&P500)"
+            except:
+                pass
 
         return stock_dict
 
-    with st.spinner("종목 리스트 불러오는 중..."):
+    with st.spinner("NYSE + NASDAQ 전 종목 불러오는 중..."):
         stock_dict = load_stock_list()
 
     # ── 검색 UI ───────────────────────────────────────
-    search_mode = st.radio("검색 방식", ["📋 목록에서 검색", "⌨️ 티커 직접 입력"],
-                           horizontal=True, label_visibility="collapsed")
+    st.caption(f"✅ 총 **{len(stock_dict):,}개** 종목 검색 가능 (NYSE + NASDAQ + AMEX)")
 
-    target_ticker = ""
-    if search_mode == "📋 목록에서 검색":
-        st.caption(f"총 {len(stock_dict)}개 종목 (S&P500 + NASDAQ100 + Russell2000)")
-        options      = [""] + sorted(stock_dict.values())
-        selected_opt = st.selectbox("종목 검색 (회사명 또는 티커로 검색)", options,
-                                    format_func=lambda x: "종목을 선택하세요" if x == "" else x)
-        if selected_opt:
-            target_ticker = selected_opt.split(" - ")[0].strip()
-    else:
-        target_ticker = st.text_input("티커 직접 입력", placeholder="예: INTU, MSFT, AAPL").upper().strip()
+    col_search, col_btn = st.columns([4, 1])
+    with col_search:
+        # 티커 직접 입력
+        direct_input = st.text_input(
+            "⌨️ 티커 직접 입력",
+            placeholder="예: INTU, MSFT, AAPL  (모르면 아래 드롭다운 사용)"
+        ).upper().strip()
 
-    _, cb = st.columns([4, 1])
-    with cb:
+    with col_btn:
+        st.markdown("<br>", unsafe_allow_html=True)
         analyze = st.button("🔍 분석 시작", use_container_width=True)
+
+    # 드롭다운 검색 (회사명으로 찾기)
+    options      = [""] + sorted(stock_dict.values())
+    selected_opt = st.selectbox(
+        "📋 회사명으로 검색 (드롭다운)",
+        options,
+        format_func=lambda x: "회사명 또는 티커로 검색..." if x == "" else x
+    )
+
+    # 티커 결정: 직접입력 우선, 없으면 드롭다운
+    if direct_input:
+        target_ticker = direct_input
+    elif selected_opt:
+        target_ticker = selected_opt.split(" — ")[0].strip()
+    else:
+        target_ticker = ""
 
     with st.expander("📖 7가지 투자 원칙 보기"):
         st.markdown("""
