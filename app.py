@@ -481,7 +481,10 @@ elif menu == "🔍 기업 원칙 분석":
 
                 # 7. 주주환원율 vs 채권금리
                 try:
-                    div_yield = (info.get('dividendYield', 0) or 0) * 100
+                    # yfinance dividendYield는 소수 비율로 반환 (예: 0.005 = 0.5%)
+                    # 단, 간혹 이미 % 형태(예: 0.5)로 반환하는 경우도 있어 1 미만일 때만 ×100
+                    raw_div = info.get('dividendYield', 0) or 0
+                    div_yield = raw_div * 100 if raw_div < 1 else raw_div
 
                     # 자사주소각률 = (전년 발행주식수 - 금년 발행주식수) / 전년 발행주식수 × 100
                     # yfinance balance sheet의 'Ordinary Shares Number' 활용
