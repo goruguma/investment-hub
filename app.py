@@ -481,16 +481,40 @@ elif menu == "🔍 기업 원칙 분석":
 
                 # 7. 주주환원율 vs 채권금리
                 try:
-                    div_yield    = (info.get('dividendYield', 0) or 0) * 100
-                    buyback      = 0
-                    for k in ['Repurchase Of Capital Stock','Common Stock Repurchase','Treasury Stock']:
-                        if k in cashflow.index:
-                            v       = cashflow.loc[k].iloc[0]
-                            buyback = abs(v) if v < 0 else v
-                            break
-                    mkt_cap        = info.get('marketCap', 0)
-                    buyback_yield  = (buyback / mkt_cap * 100) if mkt_cap > 0 else 0
-                    total_sy       = div_yield + buyback_yield
+                    div_yield = (info.get('dividendYield', 0) or 0) * 100
+
+                    # 자사주소각률 = (전년 발행주식수 - 금년 발행주식수) / 전년 발행주식수 × 100
+                    # yfinance balance sheet의 'Ordinary Shares Number' 활용
+                    buyback_yield = 0
+                    try:
+                        shares_keys = ['Ordinary Shares Number', 'Share Issued', 'Common Stock']
+                        shares_row  = next((balance.loc[k] for k in shares_keys if k in balance.index), None)
+                        if shares_row is not None and len(shares_row) >= 2:
+                            shares_curr = float(shares_row.iloc[0])  # 금년
+                            shares_prev = float(shares_row.iloc[1])  # 전년
+                            if shares_prev > 0 and shares_curr < shares_prev:
+                                # 주식수가 실제로 줄었을 때만 계산 (소각)
+                                buyback_yield = (shares_prev - shares_curr) / shares_prev * 100
+                        # balance sheet에 없으면 info의 floatShares / sharesOutstanding 비교
+                        if buyback_yield == 0:
+                            shares_out = info.get('sharesOutstanding', 0)
+                            shares_float = info.get('floatShares', 0)
+                            # 연간 주식수 감소율을 yfinance shares_history로 시도
+                            try:
+                                sh = stock.get_shares_full(start="2022-01-01")
+                                if sh is not None and len(sh) >= 2:
+                                    sh = sh.dropna().sort_index()
+                                    s_latest = float(sh.iloc[-1])
+                                    s_year_ago = float(sh.iloc[max(0, len(sh)-252)])  # 약 1년 전
+                                    if s_year_ago > 0 and s_latest < s_year_ago:
+                                        buyback_yield = (s_year_ago - s_latest) / s_year_ago * 100
+                            except:
+                                pass
+                    except:
+                        buyback_yield = 0
+
+                    mkt_cap  = info.get('marketCap', 0)
+                    total_sy = div_yield + buyback_yield
 
                     # 채권 금리
                     bond_rates = {}
@@ -513,8 +537,8 @@ elif menu == "🔍 기업 원칙 분석":
 
                     results['주주환원율'] = {
                         'pass': passes,
-                        'label': f"주주환원율 {total_sy:.2f}%  (배당 {div_yield:.2f}% + 자사주 {buyback_yield:.2f}%)",
-                        'desc': rate_desc + " | 기준: 10년물 금리 초과 여부",
+                        'label': f"주주환원율 {total_sy:.2f}%  (배당 {div_yield:.2f}% + 자사주소각 {buyback_yield:.2f}%)",
+                        'desc': rate_desc + " | 기준: 10년물 금리 초과 여부 | 자사주소각률 = 발행주식수 감소 기준",
                         '_bond_rates': bond_rates,
                         '_total_sy':   total_sy,
                     }
