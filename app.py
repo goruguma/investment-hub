@@ -324,11 +324,67 @@ elif menu == "🔍 기업 원칙 분석":
     st.caption("7가지 원칙 기반으로 기업의 투자 적합성을 검증합니다.")
     st.markdown("---")
 
-    ci, cb = st.columns([4, 1])
-    with ci:
-        target_ticker = st.text_input("분석할 티커 입력", placeholder="예: MSFT, AAPL, NVDA").upper()
+    # ── 종목 리스트 로드 ──────────────────────────────
+    @st.cache_data(ttl=86400)  # 하루 1번 갱신
+    def load_stock_list():
+        stock_dict = {}  # {티커: "티커 - 회사명 (지수)"}
+        try:
+            # S&P 500 (Wikipedia)
+            sp500 = pd.read_html("https://en.wikipedia.org/wiki/List_of_S%26P_500_companies")[0]
+            for _, row in sp500.iterrows():
+                t = str(row['Symbol']).replace('.', '-').strip()
+                n = str(row['Security']).strip()
+                stock_dict[t] = f"{t} - {n} (S&P500)"
+        except:
+            pass
+        try:
+            # 나스닥 100 (Wikipedia)
+            ndx = pd.read_html("https://en.wikipedia.org/wiki/Nasdaq-100")[4]
+            for _, row in ndx.iterrows():
+                t = str(row.get('Ticker', row.iloc[1])).strip()
+                n = str(row.get('Company', row.iloc[0])).strip()
+                if t and t != 'nan' and len(t) <= 6:
+                    if t not in stock_dict:
+                        stock_dict[t] = f"{t} - {n} (NASDAQ100)"
+        except:
+            pass
+        try:
+            # 러셀 2000 ETF 구성 종목 (iShares IWM - top holdings CSV)
+            r2k = pd.read_csv(
+                "https://www.ishares.com/us/products/239710/ishares-russell-2000-etf/1467271812596.ajax?fileType=csv&fileName=IWM_holdings&dataType=fund",
+                skiprows=9
+            )
+            for _, row in r2k.iterrows():
+                t = str(row.get('Ticker', '')).strip()
+                n = str(row.get('Name',   '')).strip()
+                if t and t != 'nan' and t != '-' and len(t) <= 6:
+                    if t not in stock_dict:
+                        stock_dict[t] = f"{t} - {n} (Russell2000)"
+        except:
+            pass
+
+        return stock_dict
+
+    with st.spinner("종목 리스트 불러오는 중..."):
+        stock_dict = load_stock_list()
+
+    # ── 검색 UI ───────────────────────────────────────
+    search_mode = st.radio("검색 방식", ["📋 목록에서 검색", "⌨️ 티커 직접 입력"],
+                           horizontal=True, label_visibility="collapsed")
+
+    target_ticker = ""
+    if search_mode == "📋 목록에서 검색":
+        st.caption(f"총 {len(stock_dict)}개 종목 (S&P500 + NASDAQ100 + Russell2000)")
+        options      = [""] + sorted(stock_dict.values())
+        selected_opt = st.selectbox("종목 검색 (회사명 또는 티커로 검색)", options,
+                                    format_func=lambda x: "종목을 선택하세요" if x == "" else x)
+        if selected_opt:
+            target_ticker = selected_opt.split(" - ")[0].strip()
+    else:
+        target_ticker = st.text_input("티커 직접 입력", placeholder="예: INTU, MSFT, AAPL").upper().strip()
+
+    _, cb = st.columns([4, 1])
     with cb:
-        st.markdown("<br>", unsafe_allow_html=True)
         analyze = st.button("🔍 분석 시작", use_container_width=True)
 
     with st.expander("📖 7가지 투자 원칙 보기"):
