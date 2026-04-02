@@ -14,8 +14,9 @@ FMP_BASE = "https://financialmodelingprep.com/api"
 
 def get_api_key():
     try:
-        return st.secrets["FMP_API_KEY"]
-    except:
+        key = st.secrets["FMP_API_KEY"]
+        return key.strip() if key else None
+    except Exception:
         return None
 
 def fmp_get(endpoint, params=None, version=3):
@@ -28,16 +29,51 @@ def fmp_get(endpoint, params=None, version=3):
         p.update(params)
     try:
         r = requests.get(url, params=p, timeout=20)
+        if r.status_code == 403:
+            st.error("❌ API 키 오류(403): FMP_API_KEY가 잘못되었습니다. Secrets를 확인해주세요.")
+            return None
+        if r.status_code == 429:
+            st.warning("⚠️ API 요청 한도 초과. 잠시 후 다시 시도해주세요.")
+            return None
         if r.status_code != 200:
             return None
         data = r.json()
         if isinstance(data, dict) and "Error Message" in data:
+            st.error(f"❌ FMP API 오류: {data['Error Message']}")
             return None
         if isinstance(data, list) and len(data) == 0:
             return None
         return data
-    except Exception:
+    except requests.exceptions.ConnectionError:
+        st.error("❌ 네트워크 연결 오류. FMP API 서버에 접근할 수 없습니다.")
         return None
+    except Exception as e:
+        return None
+
+def check_api_key():
+    """API 키와 연결 상태를 진단합니다"""
+    key = get_api_key()
+    if not key:
+        return False, "FMP_API_KEY가 Secrets에 없습니다"
+    try:
+        r = requests.get(
+            f"{FMP_BASE}/v3/profile/AAPL",
+            params={"apikey": key},
+            timeout=10
+        )
+        if r.status_code == 200:
+            data = r.json()
+            if isinstance(data, list) and data:
+                return True, "정상"
+            elif isinstance(data, dict) and "Error Message" in data:
+                return False, f"API 키 오류: {data['Error Message']}"
+        elif r.status_code == 403:
+            return False, "API 키가 유효하지 않습니다 (403)"
+        elif r.status_code == 429:
+            return False, "요청 한도 초과 (429)"
+        return False, f"응답 오류: HTTP {r.status_code}"
+    except Exception as e:
+        return False, f"연결 실패: {str(e)[:60]}" 
 
 # ══════════════════════════════════════════
 # 페이지 설정
@@ -188,10 +224,37 @@ with st.sidebar:
             st.session_state.pop(k, None)
         st.rerun()
 
-# API 키 확인
-if get_api_key() is None:
-    st.error("⚠️ Streamlit Secrets에 FMP_API_KEY를 등록해주세요.")
+# ── API 키 진단 ───────────────────────────
+api_key = get_api_key()
+if not api_key:
+    st.error("❌ FMP_API_KEY가 Streamlit Secrets에 없습니다.")
+    st.markdown("""
+    **설정 방법:**
+    1. [share.streamlit.io](https://share.streamlit.io) 접속
+    2. 본인 앱 → ⋮ 메뉴 → **Settings** → **Secrets** 탭
+    3. 아래 내용 정확히 입력 후 **Save**:
+    ```toml
+    FMP_API_KEY = "여기에_API키_입력"
+    ```
+    ⚠️ 따옴표(`"`) 포함해서 입력해야 합니다.
+    """)
     st.stop()
+
+# API 연결 상태 확인 (사이드바에 표시)
+if 'api_checked' not in st.session_state:
+    ok, msg = check_api_key()
+    st.session_state.api_checked = True
+    st.session_state.api_ok  = ok
+    st.session_state.api_msg = msg
+
+with st.sidebar:
+    if st.session_state.get('api_ok'):
+        st.success("🟢 FMP API 연결 정상")
+    else:
+        st.error(f"🔴 API 오류: {st.session_state.get('api_msg', '알 수 없음')}")
+        if st.button("🔄 API 재확인"):
+            st.session_state.pop('api_checked', None)
+            st.rerun()
 
 # ══════════════════════════════════════════
 # 1. 매매일지
@@ -453,6 +516,30 @@ elif menu == "🔍 기업 원칙 분석":
     if target_ticker and analyze:
         with st.spinner(f"📊 {target_ticker} 분석 중..."):
 
+            # ── API 응답 디버그 (문제 진단용) ───────────
+            key = get_api_key()
+            debug_results = {}
+            endpoints_to_test = {
+                "profile": f"profile/{target_ticker}",
+                "quote":   f"quote/{target_ticker}",
+                "income":  f"income-statement/{target_ticker}",
+            }
+            for name, ep in endpoints_to_test.items():
+                try:
+                    r = requests.get(
+                        f"{FMP_BASE}/v3/{ep}",
+                        params={"apikey": key, "limit": 1},
+                        timeout=15
+                    )
+                    body = r.text[:120]
+                    debug_results[name] = f"HTTP {r.status_code} | {body}"
+                except Exception as e:
+                    debug_results[name] = f"연결 실패: {e}"
+
+            with st.expander("🔧 API 진단 결과 (문제 해결용)", expanded=True):
+                for name, result in debug_results.items():
+                    st.code(f"{name}: {result}")
+
             profile      = fmp_get(f"profile/{target_ticker}")
             income_list  = fmp_get(f"income-statement/{target_ticker}",       {"limit": 4})
             balance_list = fmp_get(f"balance-sheet-statement/{target_ticker}", {"limit": 4})
@@ -463,7 +550,7 @@ elif menu == "🔍 기업 원칙 분석":
 
             if not profile or not isinstance(profile, list):
                 st.error(f"❌ **{target_ticker}** 데이터를 찾을 수 없습니다.")
-                st.info("💡 티커가 정확한지 확인해주세요. (예: AAPL, MSFT, NVDA, INTU)")
+                st.info("💡 위 API 진단 결과를 캡처해서 공유해주세요.")
                 st.stop()
 
             prof = profile[0]
