@@ -19,7 +19,6 @@ def get_api_key():
         return None
 
 def fmp_get(endpoint, params=None, version=3):
-    """FMP API 호출 - 실패시 None 반환"""
     key = get_api_key()
     if not key:
         return None
@@ -32,7 +31,6 @@ def fmp_get(endpoint, params=None, version=3):
         if r.status_code != 200:
             return None
         data = r.json()
-        # 에러 메시지 체크
         if isinstance(data, dict) and "Error Message" in data:
             return None
         if isinstance(data, list) and len(data) == 0:
@@ -111,8 +109,8 @@ hr { border-color: #1e2a3a !important; }
 # ══════════════════════════════════════════
 COLUMNS = ['매수일', '티커', '매수이유', '매수단가', '매수갯수', '목표가', '예상투자기간']
 
-def get_user_hash(pw):   return hashlib.sha256(pw.encode()).hexdigest()[:16]
-def get_data_path(h):    return f"data/journal_{h}.csv"
+def get_user_hash(pw): return hashlib.sha256(pw.encode()).hexdigest()[:16]
+def get_data_path(h):  return f"data/journal_{h}.csv"
 
 def load_journal(path):
     if os.path.exists(path):
@@ -169,7 +167,6 @@ if not st.session_state.authenticated:
                 st.rerun()
     st.stop()
 
-# ── 로그인 후 ──────────────────────────────
 DATA_PATH = st.session_state.data_path
 
 # ══════════════════════════════════════════
@@ -191,9 +188,10 @@ with st.sidebar:
             st.session_state.pop(k, None)
         st.rerun()
 
-# API 키 없으면 경고
+# API 키 확인
 if get_api_key() is None:
-    st.warning("⚠️ Streamlit Secrets에 `FMP_API_KEY`를 등록해주세요.")
+    st.error("⚠️ Streamlit Secrets에 FMP_API_KEY를 등록해주세요.")
+    st.stop()
 
 # ══════════════════════════════════════════
 # 1. 매매일지
@@ -221,14 +219,16 @@ if menu == "📝 매매일지":
         with c3:
             target = st.number_input("🎯 목표가 ($)", min_value=0.0, format="%.2f")
             period = st.text_input("⏳ 예상 투자기간", placeholder="예: 3년, 장기보유")
-        reason = st.text_area("📌 매수 이유", height=100, placeholder="예: 높은 ROCE, 지속적 FCF 성장...")
+        reason = st.text_area("📌 매수 이유", height=100,
+                              placeholder="예: 높은 ROCE, 지속적 FCF 성장, 해자 보유...")
         if st.form_submit_button("💾 일지 저장"):
             if not ticker:
                 st.error("티커를 입력해주세요.")
             else:
                 new_row = {
                     '매수일': str(date), '티커': ticker, '매수이유': reason,
-                    '매수단가': price, '매수갯수': count, '목표가': target, '예상투자기간': period
+                    '매수단가': price, '매수갯수': count,
+                    '목표가': target, '예상투자기간': period
                 }
                 st.session_state.journal = pd.concat(
                     [st.session_state.journal, pd.DataFrame([new_row])], ignore_index=True)
@@ -278,28 +278,26 @@ elif menu == "📊 포트폴리오":
         df_p['평균단가'] = df_p['투자금액'] / df_p['매수갯수'].replace(0, 1)
 
         with st.spinner("현재가 불러오는 중..."):
-            prices, sectors, names = [], [], []
             tickers_str = ",".join(df_p['티커'].tolist())
-            # 한 번에 여러 종목 조회
             quotes = fmp_get(f"quote/{tickers_str}")
             quote_map = {}
             if quotes and isinstance(quotes, list):
                 for q in quotes:
-                    sym = q.get('symbol', '')
-                    quote_map[sym] = q
+                    quote_map[q.get('symbol', '')] = q
 
+            prices, names, exchanges = [], [], []
             for t in df_p['티커']:
                 q = quote_map.get(t, {})
                 prices.append(float(q.get('price', 0) or 0))
                 names.append(q.get('name', t))
-                sectors.append(q.get('exchange', 'N/A'))
+                exchanges.append(q.get('exchange', 'N/A'))
 
-            df_p['현재가']        = prices
-            df_p['기업명']        = names
-            df_p['거래소']        = sectors
-            df_p['평가금액']      = df_p['현재가'] * df_p['매수갯수']
-            df_p['수익금']        = df_p['평가금액'] - df_p['투자금액']
-            df_p['수익률(%)']     = ((df_p['현재가'] - df_p['평균단가']) / df_p['평균단가'].replace(0, 1)) * 100
+            df_p['현재가']          = prices
+            df_p['기업명']          = names
+            df_p['거래소']          = exchanges
+            df_p['평가금액']        = df_p['현재가'] * df_p['매수갯수']
+            df_p['수익금']          = df_p['평가금액'] - df_p['투자금액']
+            df_p['수익률(%)']       = ((df_p['현재가'] - df_p['평균단가']) / df_p['평균단가'].replace(0, 1)) * 100
             df_p['목표가달성률(%)'] = (df_p['현재가'] / df_p['목표가'].replace(0, 1)) * 100
 
         ti = df_p['투자금액'].sum()
@@ -346,23 +344,18 @@ elif menu == "📊 포트폴리오":
                                   font_color='#e8eaf0', yaxis=dict(gridcolor='#1e2a3a'), showlegend=False)
             st.plotly_chart(fig_bar, use_container_width=True)
 
-        # 주가 추이
         st.markdown("---")
         st.subheader("📈 주가 추이")
         sel = st.multiselect("비교 종목", df_p['티커'].tolist(), default=df_p['티커'].tolist()[:3])
-        period_opt = st.select_slider(
-            "기간",
-            options=["1mo", "3mo", "6mo", "1y", "2y", "5y"],
-            value="1y"
-        )
-        days_map = {"1mo": 30, "3mo": 90, "6mo": 180, "1y": 365, "2y": 730, "5y": 1825}
+        days_map = {"1개월": 30, "3개월": 90, "6개월": 180, "1년": 365, "2년": 730, "5년": 1825}
+        period_label = st.select_slider("기간", options=list(days_map.keys()), value="1년")
 
         if sel:
             fig_line = go.Figure()
             colors   = ['#3b82f6', '#6366f1', '#22c55e', '#f59e0b', '#ef4444', '#8b5cf6']
             for i, t in enumerate(sel):
                 data = fmp_get(f"historical-price-full/{t}",
-                               {"serietype": "line", "timeseries": days_map[period_opt]})
+                               {"serietype": "line", "timeseries": days_map[period_label]})
                 if data and isinstance(data, dict) and 'historical' in data:
                     hdf = pd.DataFrame(data['historical'])
                     hdf['date'] = pd.to_datetime(hdf['date'])
@@ -387,67 +380,53 @@ elif menu == "🔍 기업 원칙 분석":
     st.caption("7가지 원칙 기반으로 기업의 투자 적합성을 검증합니다.")
     st.markdown("---")
 
-    # 종목 리스트 (S&P500 + NASDAQ100 + DOW30)
+    # ── 종목 리스트: FMP API로 NYSE + NASDAQ 전종목 ──
     @st.cache_data(ttl=86400)
     def load_stock_list():
+        """FMP API로 NYSE + NASDAQ 상장 전종목 로드 (하루 1회 캐시)"""
         stock_dict = {}
-        try:
-            df = pd.read_html("https://en.wikipedia.org/wiki/List_of_S%26P_500_companies")[0]
-            for _, row in df.iterrows():
-                t = str(row["Symbol"]).replace(".", "-").strip()
-                n = str(row["Security"]).strip()
-                stock_dict[t] = f"{t} — {n} (S&P500)"
-        except:
-            pass
-        try:
-            tables = pd.read_html("https://en.wikipedia.org/wiki/Nasdaq-100")
-            for tbl in tables:
-                cols_lower = [str(c).lower() for c in tbl.columns]
-                if any("ticker" in c or "symbol" in c for c in cols_lower):
-                    tc = next(c for c in tbl.columns if "ticker" in str(c).lower() or "symbol" in str(c).lower())
-                    nc = next((c for c in tbl.columns if "company" in str(c).lower()), None)
-                    for _, row in tbl.iterrows():
-                        t = str(row[tc]).strip()
-                        n = str(row[nc]).strip() if nc else t
-                        if t and t != "nan" and 1 <= len(t) <= 6 and t.replace("-","").isalpha():
-                            if t not in stock_dict:
-                                stock_dict[t] = f"{t} — {n} (NASDAQ100)"
-                    break
-        except:
-            pass
-        try:
-            df2 = pd.read_html("https://en.wikipedia.org/wiki/Dow_Jones_Industrial_Average")[1]
-            for _, row in df2.iterrows():
-                t = str(row.get("Symbol", row.get("Ticker", ""))).strip()
-                n = str(row.get("Company", row.get("Name", ""))).strip()
-                if t and t != "nan" and 1 <= len(t) <= 5:
-                    if t not in stock_dict:
-                        stock_dict[t] = f"{t} — {n} (DOW30)"
-        except:
-            pass
+        # FMP stock list 엔드포인트 - 전체 상장 종목 반환
+        data = fmp_get("stock/list")
+        if data and isinstance(data, list):
+            for item in data:
+                sym      = str(item.get('symbol', '') or '').strip()
+                name     = str(item.get('name', '') or '').strip()
+                exchange = str(item.get('exchangeShortName', '') or '').strip()
+                # NYSE, NASDAQ만 필터링
+                if exchange in ('NYSE', 'NASDAQ') and sym and name:
+                    # 특수문자 제거 (워런트, 유닛 등 제외)
+                    if len(sym) <= 6 and sym.replace('-', '').isalpha():
+                        stock_dict[sym] = f"{sym} — {name} ({exchange})"
         return stock_dict
 
-    with st.spinner("종목 리스트 불러오는 중..."):
+    with st.spinner("NYSE + NASDAQ 종목 불러오는 중..."):
         stock_dict = load_stock_list()
 
-    st.caption(f"✅ 총 **{len(stock_dict):,}개** 종목 | 목록에 없으면 직접 입력하세요")
+    total_count = len(stock_dict)
+    st.caption(f"✅ 총 **{total_count:,}개** 종목 (NYSE + NASDAQ) | 목록에 없으면 직접 입력하세요")
 
+    # ── 검색 UI ──────────────────────────────────
     col_inp, col_btn = st.columns([4, 1])
     with col_inp:
         direct = st.text_input(
             "⌨️ 티커 직접 입력",
-            placeholder="예: INTU, MSFT, AAPL"
+            placeholder="예: AAPL, INTU, NVDA, MSFT"
         ).upper().strip()
     with col_btn:
         st.markdown("<br>", unsafe_allow_html=True)
         analyze = st.button("🔍 분석 시작", use_container_width=True)
 
-    opts = [""] + sorted(stock_dict.values())
-    sel_drop = st.selectbox(
-        "📋 회사명으로 검색 (드롭다운)",
-        opts,
-        format_func=lambda x: "회사명 또는 티커로 검색..." if x == "" else x
-    )
+    # 드롭다운 (종목 많으면 검색 가능)
+    if total_count > 0:
+        opts = [""] + sorted(stock_dict.values())
+        sel_drop = st.selectbox(
+            "📋 회사명으로 검색 (드롭다운)",
+            opts,
+            format_func=lambda x: "티커 또는 회사명으로 검색..." if x == "" else x
+        )
+    else:
+        sel_drop = ""
+        st.info("종목 리스트를 불러오지 못했습니다. 티커를 직접 입력해주세요.")
 
     # 직접 입력 우선, 없으면 드롭다운
     if direct:
@@ -470,33 +449,32 @@ elif menu == "🔍 기업 원칙 분석":
 | 7 | **주주환원율** | 배당+자사주소각률 > 미국 10년물 금리 |
         """)
 
+    # ── 분석 실행 ────────────────────────────────
     if target_ticker and analyze:
         with st.spinner(f"📊 {target_ticker} 분석 중..."):
 
-            # 데이터 수집
-            profile     = fmp_get(f"profile/{target_ticker}")
-            income_list = fmp_get(f"income-statement/{target_ticker}", {"limit": 4})
-            balance_list= fmp_get(f"balance-sheet-statement/{target_ticker}", {"limit": 4})
-            cf_list     = fmp_get(f"cash-flow-statement/{target_ticker}", {"limit": 4})
-            quote_data  = fmp_get(f"quote/{target_ticker}")
-            hist_raw    = fmp_get(f"historical-price-full/{target_ticker}",
-                                   {"serietype": "line", "timeseries": 365})
+            profile      = fmp_get(f"profile/{target_ticker}")
+            income_list  = fmp_get(f"income-statement/{target_ticker}",       {"limit": 4})
+            balance_list = fmp_get(f"balance-sheet-statement/{target_ticker}", {"limit": 4})
+            cf_list      = fmp_get(f"cash-flow-statement/{target_ticker}",     {"limit": 4})
+            quote_data   = fmp_get(f"quote/{target_ticker}")
+            hist_raw     = fmp_get(f"historical-price-full/{target_ticker}",
+                                    {"serietype": "line", "timeseries": 365})
 
-            # 프로필 없으면 종료
             if not profile or not isinstance(profile, list):
-                st.error(f"❌ **{target_ticker}** 데이터를 찾을 수 없습니다. 티커를 확인해주세요.")
-                st.info("💡 FMP API는 미국 상장 주식을 지원합니다. 티커가 정확한지 확인해주세요. (예: AAPL, MSFT, NVDA)")
+                st.error(f"❌ **{target_ticker}** 데이터를 찾을 수 없습니다.")
+                st.info("💡 티커가 정확한지 확인해주세요. (예: AAPL, MSFT, NVDA, INTU)")
                 st.stop()
 
             prof = profile[0]
-            inc  = income_list  if isinstance(income_list, list)  and income_list  else []
+            inc  = income_list  if isinstance(income_list,  list) and income_list  else []
             bal  = balance_list if isinstance(balance_list, list) and balance_list else []
-            cf   = cf_list      if isinstance(cf_list, list)      and cf_list      else []
-            q    = quote_data[0] if isinstance(quote_data, list)  and quote_data   else {}
+            cf   = cf_list      if isinstance(cf_list,      list) and cf_list      else []
+            q    = quote_data[0] if isinstance(quote_data,  list) and quote_data   else {}
 
             company_name = prof.get('companyName', target_ticker)
-            sector       = prof.get('sector',   'N/A')
-            industry     = prof.get('industry', 'N/A')
+            sector       = prof.get('sector',      'N/A')
+            industry     = prof.get('industry',    'N/A')
             mkt_cap      = float(prof.get('mktCap', 0) or 0)
             description  = prof.get('description', '')
 
@@ -511,7 +489,7 @@ elif menu == "🔍 기업 원칙 분석":
 
             results = {}
 
-            # ── 원칙 1: ROCE ──────────────────────────
+            # 원칙 1: ROCE
             try:
                 ebit      = float(inc[0].get('operatingIncome', 0) or 0)
                 tot_asset = float(bal[0].get('totalAssets', 0) or 0)
@@ -526,14 +504,12 @@ elif menu == "🔍 기업 원칙 분석":
             except:
                 results['ROCE'] = {'pass': None, 'label': 'N/A', 'desc': "데이터 없음"}
 
-            # ── 원칙 2: 매출 성장률 ───────────────────
+            # 원칙 2: 매출 성장률
             try:
                 revs = [float(x.get('revenue', 0) or 0) for x in inc[:4]]
                 if len(revs) >= 2:
-                    gr = []
-                    for i in range(len(revs) - 1):
-                        if revs[i+1] != 0:
-                            gr.append((revs[i] - revs[i+1]) / abs(revs[i+1]) * 100)
+                    gr = [(revs[i] - revs[i+1]) / abs(revs[i+1]) * 100
+                          for i in range(len(revs)-1) if revs[i+1] != 0]
                     avg_g = sum(gr) / len(gr) if gr else 0
                 else:
                     avg_g = 0
@@ -545,7 +521,7 @@ elif menu == "🔍 기업 원칙 분석":
             except:
                 results['매출성장률'] = {'pass': None, 'label': 'N/A', 'desc': "데이터 없음"}
 
-            # ── 원칙 3: FCF ───────────────────────────
+            # 원칙 3: FCF
             try:
                 fcfs    = [float(x.get('freeCashFlow', 0) or 0) for x in cf[:3]]
                 all_pos = bool(fcfs) and all(v > 0 for v in fcfs)
@@ -558,7 +534,7 @@ elif menu == "🔍 기업 원칙 분석":
             except:
                 results['FCF'] = {'pass': None, 'label': 'N/A', 'desc': "데이터 없음"}
 
-            # ── 원칙 4: 부채비율 D/E ──────────────────
+            # 원칙 4: 부채비율
             try:
                 debt   = float(bal[0].get('totalDebt', 0) or 0)
                 equity = float(bal[0].get('totalStockholdersEquity', 0) or 0)
@@ -571,7 +547,7 @@ elif menu == "🔍 기업 원칙 분석":
             except:
                 results['부채비율'] = {'pass': None, 'label': 'N/A', 'desc': "데이터 없음"}
 
-            # ── 원칙 5: 영업이익률 ────────────────────
+            # 원칙 5: 영업이익률
             try:
                 om_ratio = float(inc[0].get('operatingIncomeRatio', 0) or 0)
                 om_pct   = om_ratio * 100
@@ -583,50 +559,45 @@ elif menu == "🔍 기업 원칙 분석":
             except:
                 results['영업이익률'] = {'pass': None, 'label': 'N/A', 'desc': "데이터 없음"}
 
-            # ── 원칙 6: 이평선 이격도 ─────────────────
+            # 원칙 6: 이평선 이격도
             hist_df = None
             try:
                 if hist_raw and isinstance(hist_raw, dict) and 'historical' in hist_raw:
                     hist_df = pd.DataFrame(hist_raw['historical'])
-                    hist_df['date']  = pd.to_datetime(hist_df['date'])
+                    hist_df['date'] = pd.to_datetime(hist_df['date'])
                     hist_df = hist_df.sort_values('date').reset_index(drop=True)
                     ps      = hist_df['close'].astype(float)
                     cur_p   = float(ps.iloc[-1])
                     ma20    = float(ps.rolling(20).mean().iloc[-1])
                     ma50    = float(ps.rolling(50).mean().iloc[-1])
                     ma200   = float(ps.rolling(200).mean().iloc[-1]) if len(ps) >= 200 else None
-                    g20  = abs(cur_p - ma20) / ma20 * 100
-                    g50  = abs(cur_p - ma50) / ma50 * 100
+                    g20  = abs(cur_p - ma20)  / ma20  * 100
+                    g50  = abs(cur_p - ma50)  / ma50  * 100
                     g200 = abs(cur_p - ma200) / ma200 * 100 if ma200 else None
                     t20  = g20 <= 5
                     t50  = g50 <= 8
                     t200 = (g200 <= 15) if g200 is not None else True
+                    ma200_str = f"{g200:.1f}%" if g200 is not None else "N/A"
                     results['이평선 이격도'] = {
-                        'pass':    t20 and t50 and t200,
-                        'label':   f"20일: {g20:.1f}%{'✓' if t20 else '✗'} | 50일: {g50:.1f}%{'✓' if t50 else '✗'} | 200일: {f'{g200:.1f}%' if g200 else 'N/A'}{'✓' if t200 else '✗'}",
-                        'desc':    "현재가 vs 이동평균선 이격 | 기준: 20일≤5% / 50일≤8% / 200일≤15%",
-                        '_ps':     ps,
-                        '_dates':  hist_df['date'],
+                        'pass':   t20 and t50 and t200,
+                        'label':  f"20일: {g20:.1f}%{'✓' if t20 else '✗'} | 50일: {g50:.1f}%{'✓' if t50 else '✗'} | 200일: {ma200_str}{'✓' if t200 else '✗'}",
+                        'desc':   "현재가 vs 이동평균선 이격 | 기준: 20일≤5% / 50일≤8% / 200일≤15%",
+                        '_ps':    ps,
+                        '_dates': hist_df['date'],
                     }
                 else:
                     results['이평선 이격도'] = {'pass': None, 'label': 'N/A', 'desc': "주가 데이터 없음"}
             except:
                 results['이평선 이격도'] = {'pass': None, 'label': 'N/A', 'desc': "데이터 없음"}
 
-            # ── 원칙 7: 주주환원율 vs 채권금리 ──────────
-            bond_rates = {}
-            total_sy   = 0.0
-            div_pct    = 0.0
-            bb_pct     = 0.0
+            # 원칙 7: 주주환원율 vs 채권금리
             try:
-                # 배당수익률
                 cur_price = float(q.get('price', 0) or 0)
                 last_div  = float(prof.get('lastDiv', 0) or 0)
                 div_pct   = (last_div / cur_price * 100) if cur_price > 0 else 0
 
-                # 자사주소각률 (발행주식수 감소 기준)
-                shares_now  = float(q.get('sharesOutstanding', 0) or 0)
-                # income statement에서 가중평균 주식수로 YoY 비교
+                # 자사주소각률 (가중평균 발행주식수 YoY 감소 기준)
+                bb_pct = 0.0
                 if len(inc) >= 2:
                     sh_now  = float(inc[0].get('weightedAverageShsOut', 0) or 0)
                     sh_prev = float(inc[1].get('weightedAverageShsOut', 0) or 0)
@@ -635,30 +606,28 @@ elif menu == "🔍 기업 원칙 분석":
 
                 total_sy = div_pct + bb_pct
 
-                # 미국 10년물 금리
+                # 채권금리 (FMP)
+                bond_rates = {}
                 tnx = fmp_get("quote/%5ETNX")
                 if tnx and isinstance(tnx, list):
                     bond_rates['미국 10년물'] = round(float(tnx[0].get('price', 0) or 0), 2)
 
-                # 회사채 LQD yield
                 lqd = fmp_get("quote/LQD")
                 if lqd and isinstance(lqd, list):
-                    lqd_yield = float(lqd[0].get('dividendYield', 0) or 0)
-                    bond_rates['회사채(LQD)'] = round(lqd_yield * 100 if lqd_yield < 1 else lqd_yield, 2)
+                    lqd_y = float(lqd[0].get('dividendYield', 0) or 0)
+                    bond_rates['회사채(LQD)'] = round(lqd_y * 100 if lqd_y < 1 else lqd_y, 2)
 
-                # 하이일드 HYG yield
                 hyg = fmp_get("quote/HYG")
                 if hyg and isinstance(hyg, list):
-                    hyg_yield = float(hyg[0].get('dividendYield', 0) or 0)
-                    bond_rates['하이일드(HYG)'] = round(hyg_yield * 100 if hyg_yield < 1 else hyg_yield, 2)
+                    hyg_y = float(hyg[0].get('dividendYield', 0) or 0)
+                    bond_rates['하이일드(HYG)'] = round(hyg_y * 100 if hyg_y < 1 else hyg_y, 2)
 
-                tnx_rate = bond_rates.get('미국 10년물')
-                passes   = (total_sy > tnx_rate) if tnx_rate else None
+                tnx_rate  = bond_rates.get('미국 10년물')
+                passes    = (total_sy > tnx_rate) if tnx_rate else None
                 rate_desc = " | ".join([
                     f"{n}: {r:.2f}%" if r else f"{n}: N/A"
                     for n, r in bond_rates.items()
                 ])
-
                 results['주주환원율'] = {
                     'pass':        passes,
                     'label':       f"주주환원율 {total_sy:.2f}% (배당 {div_pct:.2f}% + 자사주소각 {bb_pct:.2f}%)",
@@ -712,22 +681,18 @@ elif menu == "🔍 기업 원칙 분석":
             st.subheader("📉 이동평균선 차트 (1년)")
             ir = results.get('이평선 이격도', {})
             if '_ps' in ir:
-                ps_s  = ir['_ps']
-                dt_s  = ir['_dates']
+                ps_s = ir['_ps']
+                dt_s = ir['_dates']
                 fig_ma = go.Figure()
-                fig_ma.add_trace(go.Scatter(
-                    x=dt_s, y=ps_s.values, name='주가',
-                    line=dict(color='#e8eaf0', width=1.5)))
-                fig_ma.add_trace(go.Scatter(
-                    x=dt_s, y=ps_s.rolling(20).mean().values, name='MA20',
-                    line=dict(color='#3b82f6', width=1.5, dash='dot')))
-                fig_ma.add_trace(go.Scatter(
-                    x=dt_s, y=ps_s.rolling(50).mean().values, name='MA50',
-                    line=dict(color='#f59e0b', width=1.5, dash='dot')))
+                fig_ma.add_trace(go.Scatter(x=dt_s, y=ps_s.values, name='주가',
+                                            line=dict(color='#e8eaf0', width=1.5)))
+                fig_ma.add_trace(go.Scatter(x=dt_s, y=ps_s.rolling(20).mean().values,
+                                            name='MA20', line=dict(color='#3b82f6', width=1.5, dash='dot')))
+                fig_ma.add_trace(go.Scatter(x=dt_s, y=ps_s.rolling(50).mean().values,
+                                            name='MA50', line=dict(color='#f59e0b', width=1.5, dash='dot')))
                 if len(ps_s) >= 200:
-                    fig_ma.add_trace(go.Scatter(
-                        x=dt_s, y=ps_s.rolling(200).mean().values, name='MA200',
-                        line=dict(color='#ef4444', width=1.5, dash='dot')))
+                    fig_ma.add_trace(go.Scatter(x=dt_s, y=ps_s.rolling(200).mean().values,
+                                                name='MA200', line=dict(color='#ef4444', width=1.5, dash='dot')))
                 fig_ma.update_layout(
                     paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
                     font_color='#e8eaf0', hovermode='x unified', height=380,
@@ -741,11 +706,11 @@ elif menu == "🔍 기업 원칙 분석":
             st.subheader("💰 주주환원율 vs 채권금리")
             sr = results.get('주주환원율', {})
             if '_bond_rates' in sr and sr['_bond_rates']:
-                br  = sr['_bond_rates']
-                sy  = sr['_total_sy']
-                lbs = ['주주환원율'] + [k for k, v in br.items() if v]
-                vls = [sy]           + [v for v in br.values() if v]
-                clrs = ['#3b82f6'] + ['#4b5563'] * (len(lbs) - 1)
+                br   = sr['_bond_rates']
+                sy   = sr['_total_sy']
+                lbs  = ['주주환원율'] + [k for k, v in br.items() if v]
+                vls  = [sy]           + [v for v in br.values()   if v]
+                clrs = ['#3b82f6']    + ['#4b5563'] * (len(lbs) - 1)
                 fig_bond = go.Figure(go.Bar(
                     x=lbs, y=vls, marker_color=clrs,
                     text=[f"{v:.2f}%" for v in vls], textposition='outside'
@@ -763,11 +728,10 @@ elif menu == "🔍 기업 원칙 분석":
             st.markdown("---")
             st.subheader("📊 3개년 재무 추세")
             if inc:
-                years   = [str(x.get('calendarYear', ''))  for x in inc[:4]][::-1]
-                revs_b  = [float(x.get('revenue', 0) or 0) / 1e9 for x in inc[:4]][::-1]
-                op_b    = [float(x.get('operatingIncome', 0) or 0) / 1e9 for x in inc[:4]][::-1]
-                fcf_b   = [float(x.get('freeCashFlow', 0) or 0) / 1e9 for x in (cf[:4] if cf else [])][::-1]
-
+                years  = [str(x.get('calendarYear', '')) for x in inc[:4]][::-1]
+                revs_b = [float(x.get('revenue', 0) or 0) / 1e9         for x in inc[:4]][::-1]
+                op_b   = [float(x.get('operatingIncome', 0) or 0) / 1e9 for x in inc[:4]][::-1]
+                fcf_b  = [float(x.get('freeCashFlow', 0) or 0) / 1e9    for x in (cf[:4] if cf else [])][::-1]
                 fig_trend = go.Figure()
                 fig_trend.add_trace(go.Bar(name='매출 ($B)',     x=years, y=revs_b, marker_color='#3b82f6'))
                 fig_trend.add_trace(go.Bar(name='영업이익 ($B)', x=years, y=op_b,   marker_color='#22c55e'))
